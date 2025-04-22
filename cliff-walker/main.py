@@ -26,7 +26,7 @@ params = Params(
     epsilon=0.1,
     n_runs=10,
     seed=42,
-    savefig_folder=Path("cliff_imgs/")
+    savefig_folder=Path("imgs/")
 )
 
 params.savefig_folder.mkdir(parents=True, exist_ok=True)
@@ -118,6 +118,39 @@ def run_env(model, model_type):
 
     return rewards, model.q, falls
 
+# --- Evaluate Trained Models ---
+def evaluate_policy(model_qtable, model_type, n_episodes=100):
+    total_rewards = []
+    cliff_falls = []
+
+    explorer = EpsilonGreedy(epsilon=0.0)  # Pure exploitation
+
+    for episode in range(n_episodes):
+        state, _ = env.reset(seed=params.seed + episode + 9999)  # Separate from training seeds
+        done = False
+        total_reward = 0
+        fell = False
+
+        while not done:
+            action = explorer.choose(state, model_qtable)
+            new_state, reward, terminated, truncated, _ = env.step(action)
+            done = terminated or truncated
+
+            if reward == -100:
+                fell = True
+
+            shaped_reward = reward - 0.05
+            if reward == 0 and done:
+                shaped_reward += 100
+
+            total_reward += shaped_reward
+            state = new_state
+
+        total_rewards.append(total_reward)
+        cliff_falls.append(int(fell))
+
+    return total_rewards, cliff_falls
+
 # --- Run models ---
 q_model = QModel()
 sarsa_model = SARSAModel()
@@ -191,5 +224,36 @@ def visualize_policy_and_value(q_table, title_prefix, filename_prefix):
 
 visualize_policy_and_value(q_qtable, "Q-Learning", "q_policy")
 visualize_policy_and_value(sarsa_qtable, "SARSA", "sarsa_policy")
+
+# --- Evaluation Phase (no exploration) ---
+q_eval_rewards, q_eval_falls = evaluate_policy(q_qtable, "q_learning")
+sarsa_eval_rewards, sarsa_eval_falls = evaluate_policy(sarsa_qtable, "sarsa")
+
+# --- Plot evaluation results ---
+plt.figure(figsize=(14, 6))
+plt.bar(["Q-Learning", "SARSA"], [np.mean(q_eval_rewards), np.mean(sarsa_eval_rewards)],
+        yerr=[np.std(q_eval_rewards), np.std(sarsa_eval_rewards)], capsize=10)
+plt.ylabel("Average Total Reward")
+plt.title("Evaluation: Avg Reward per Episode (No Exploration)")
+plt.grid(True)
+plt.tight_layout()
+plt.savefig(params.savefig_folder / "eval_avg_rewards.png")
+plt.show()
+
+plt.figure(figsize=(14, 6))
+plt.bar(["Q-Learning", "SARSA"], [np.mean(q_eval_falls), np.mean(sarsa_eval_falls)],
+        yerr=[np.std(q_eval_falls), np.std(sarsa_eval_falls)], capsize=10)
+plt.ylabel("Average Cliff Falls")
+plt.title("Evaluation: Avg Cliff Falls per Episode (No Exploration)")
+plt.grid(True)
+plt.tight_layout()
+plt.savefig(params.savefig_folder / "eval_cliff_falls.png")
+plt.show()
+
+from scipy.stats import ttest_ind
+
+print("T-test (Eval Reward):", ttest_ind(q_eval_rewards, sarsa_eval_rewards))
+print("T-test (Cliff Falls):", ttest_ind(q_eval_falls, sarsa_eval_falls))
+
 
 env.close()

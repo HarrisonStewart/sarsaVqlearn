@@ -20,13 +20,13 @@ class Params(NamedTuple):
     savefig_folder: Path
 
 params = Params(
-    total_episodes=500,
+    total_episodes=2000,
     learning_rate=0.1,
     gamma=0.99,
     epsilon=0.1,
     seed=123,
-    n_runs=10,
-    bins=10,
+    n_runs=3,
+    bins=5,
     savefig_folder=Path("lunar_imgs/")
 )
 
@@ -98,18 +98,46 @@ def run_env(learner, model_type):
                 new_state = discretize(obs)
                 new_action = explorer.choose(new_state, learner.q)
 
+                # === Reward Shaping ===
+                shaped_reward = reward
+
+                # Decompose state vector
+                x, y, vx, vy, angle, angular_v, left_contact, right_contact = obs
+
+                shaped_reward += -0.3 * abs(vx)      # penalize horizontal speed
+                shaped_reward += -0.3 * abs(vy)      # penalize vertical speed
+                shaped_reward += -0.2 * abs(angle)   # penalize tilt
+                shaped_reward += -0.1 * abs(angular_v)  # penalize spin
+
+                if left_contact or right_contact:
+                    shaped_reward += 10  # reward leg contact
+
+                # === Update with shaped reward ===
                 if model_type == "q_learning":
-                    learner.update(state, action, reward, obs)
+                    learner.update(state, action, shaped_reward, obs)
                 else:
-                    learner.update(state, action, reward, obs, new_action)
+                    learner.update(state, action, shaped_reward, obs, new_action)
 
                 state = new_state
                 action = new_action
-                total_reward += reward
+                total_reward += reward  # accumulate original reward for tracking
 
             rewards[episode, run] = total_reward
 
     return rewards
+
+def estimate_convergence(df, threshold=150):
+    convergence = {}
+    for model in df["Model"].unique():
+        model_data = df[df["Model"] == model]
+        avg = model_data.groupby("Episode")["Reward"].mean()
+        rolling = avg.rolling(window=window, min_periods=1).mean()
+        above_thresh = rolling[rolling > threshold]
+        if not above_thresh.empty:
+            convergence[model] = above_thresh.index[0]
+        else:
+            convergence[model] = None
+    return convergence
 
 explorer = EpsilonGreedy()
 
@@ -133,14 +161,26 @@ df_sarsa = pd.DataFrame({
 })
 df_all = pd.concat([df_q, df_sarsa])
 
-plt.figure(figsize=(12, 6))
-sns.lineplot(data=df_all, x="Episode", y="Reward", hue="Model", ci="sd")
-plt.title("LunarLander-v2: Q-Learning vs SARSA")
+# Compute rolling average reward
+window = 50
+df_all["RollingAvg"] = df_all.groupby("Model")["Reward"].transform(lambda x: x.rolling(window=window, min_periods=1).mean())
+
+plt.figure(figsize=(14, 6))
+sns.lineplot(data=df_all, x="Episode", y="RollingAvg", hue="Model", linewidth=2)
+plt.title(f"LunarLander-v3: Rolling Avg Reward (Window={window})")
 plt.xlabel("Episode")
-plt.ylabel("Reward")
+plt.ylabel("Rolling Average Reward")
+plt.axhline(200, color='gray', linestyle='--', label="Ideal Target (200)")
+plt.axhline(0, color='gray', linestyle=':', label="Zero Reward")
+plt.legend()
 plt.grid(True)
 plt.tight_layout()
-plt.savefig(params.savefig_folder / "lunarlander_q_vs_sarsa.png")
+plt.savefig(params.savefig_folder / "lunarlander_convergence.png")
 plt.show()
+
+convergence_points = estimate_convergence(df_all, threshold=150)
+print("Estimated convergence episodes:")
+for model, ep in convergence_points.items():
+    print(f"  {model}: {'Not converged' if ep is None else f'Episode {ep}'}")
 
 env.close()
